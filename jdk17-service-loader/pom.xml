@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>io.github.xiaoso456</groupId>
+    <artifactId>jdk17-service-loader</artifactId>
+    <packaging>pom</packaging>
+    <version>1.0-SNAPSHOT</version>
+
+    <modules>
+        <!--api模块定义spi上游接口-->
+        <module>api</module>
+        <!--api-system-impl是api模块的下游实现1-->
+        <module>api-system-impl</module>
+        <!--api-file-impl是api模块的下游实现2-->
+        <module>api-file-impl</module>
+        <!--使用jdk17的ServiceLoader演示了的spi demo-->
+        <module>service-loader-demo</module>
+        <!--自己实现了一个简单的ServiceLoader-->
+        <module>my-service-loader</module>
+    </modules>
+
+    <properties>
+        <maven.compiler.source>17</maven.compiler.source>
+        <maven.compiler.target>17</maven.compiler.target>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    </properties>
+
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>io.github.xiaoso456</groupId>
+                <artifactId>api</artifactId>
+                <version>1.0-SNAPSHOT</version>
+            </dependency>
+            <dependency>
+                <groupId>io.github.xiaoso456</groupId>
+                <artifactId>api-system-impl</artifactId>
+                <version>1.0-SNAPSHOT</version>
+            </dependency>
+            <dependency>
+                <groupId>io.github.xiaoso456</groupId>
+                <artifactId>api-file-impl</artifactId>
+                <version>1.0-SNAPSHOT</version>
+            </dependency>
+            <dependency>
+                <groupId>io.github.xiaoso456</groupId>
+                <artifactId>my-serive-loader</artifactId>
+                <version>1.0-SNAPSHOT</version>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
+</project>
