@@ -399,9 +399,282 @@ SpringBoot 3.x 读取的文件是 `META/spring/org.springframework.boot.autoconf
 
 
 
+## ClassLoader
+
+ClassLoader在插件机制上可以说是SPI机制的一个补充，它负责将类字节码加载到内存中，并转换为可执行的 Java 类。类加载器具有以下功能和作用：
+
++ 类隔离：类加载器可以创建不同的类加载域，实现类的隔离和版本管理，不同的类加载器加载的类互相之间不可见。
+
++ 动态加载：类加载器可以在运行时动态加载类，灵活地引入新的类或资源，实现插件式的架构。
+
++ 模块化：类加载器可以支持模块化的应用程序结构，将应用程序划分为多个模块，每个模块具有独立的类加载器。
+
++ 热部署：类加载器可以实现热部署，即在应用程序运行时替换或升级类，而无需重启应用程序。
+
+对于插件来说，如果要实现热部署重加载，需要破坏双亲委托模型，实现一个自定义的ClassLoader
+
+### 关键方法
+
+```mermaid
+graph LR
+    A(loadClass) --> B(findLoadedClass)
+    B --已加载--> G(返回已加载的Class对象)
+    B --未加载--> C(loadClass方法调用父类加载器的loadClass方法)
+    C --加载成功--> G
+    C --加载失败--> D(findClass)
+    D --加载成功--> E(defineClass)
+    E --> G
+    D --加载失败--> F(抛出ClassNotFoundException异常)
+```
+
+
+
+要实现自定义 ClassLoader，就要了解一些关键方法
+
++ `loadClass(String name)`：根据给定的类名加载类并返回 Class 对象。
+
++ `findClass(String name)`：查找并加载指定名称的类。
++ `defineClass(String name, byte[] b, int off, int len)`：定义一个新的类，并返回 Class 对象。
+
+#### loadClass
+
+使用指定的二进制名称加载类，默认实现按照以下顺序搜索类：
+
+1. 调用 findLoadedClass(String name) 检查类是否已加载
+2. 遵照双亲委托模型，优先调用父类加载器 loadClass方法加载类
+3. 如果找不到，调用自身findClass(String name) 方法加载类
+
+```java
+
+    protected Class<?> loadClass(String name, boolean resolve)
+        throws ClassNotFoundException
+    {
+        synchronized (getClassLoadingLock(name)) {
+            // First, check if the class has already been loaded
+            Class<?> c = findLoadedClass(name);
+            if (c == null) {
+                long t0 = System.nanoTime();
+                try {
+                    if (parent != null) {
+                        c = parent.loadClass(name, false);
+                    } else {
+                        c = findBootstrapClassOrNull(name);
+                    }
+                } catch (ClassNotFoundException e) {
+                    // ClassNotFoundException thrown if class not found
+                    // from the non-null parent class loader
+                }
+
+                if (c == null) {
+                    // If still not found, then invoke findClass in order
+                    // to find the class.
+                    long t1 = System.nanoTime();
+                    c = findClass(name);
+
+                    // this is the defining class loader; record the stats
+                    PerfCounter.getParentDelegationTime().addTime(t1 - t0);
+                    PerfCounter.getFindClassTime().addElapsedTimeFrom(t1);
+                    PerfCounter.getFindClasses().increment();
+                }
+            }
+            if (resolve) {
+                resolveClass(c);
+            }
+            return c;
+        }
+    }
+```
+
+#### defineClass
+
+defineClass 方法的工作流程如下：
+
+1. 根据传入的字节数组 b、起始偏移量 off 和长度 len 创建一个新的 Class 对象。
+2. 使用该类的全限定名 name 进行类的命名
+3. 它会验证字节数组的格式是否符合 Java 类的规范。如果字节数组的格式不正确，将会抛出 ClassFormatError 异常。如果字节数组的格式正确，defineClass 方法会将类定义加载到内存中，并返回对应的 Class 对象。
+
+注：defineClass 最终调用的是本地方法
+
+```java
+    protected final Class<?> defineClass(String name, byte[] b, int off, int len)
+        throws ClassFormatError
+    {
+        return defineClass(name, b, off, len, null);
+    }
+```
+
+#### findClass
+
+findClass 方法的工作流程如下：
+
+1. 尝试根据指定的类名称 name 进行查找和加载类。
+2. 在自定义类加载器中，可以根据需要实现自定义的查找和加载逻辑。这可以包括从特定的位置加载类文件、从网络下载类文件或者从其他来源获取类定义的字节码数据。
+3. 如果 findClass 方法能够成功加载类，则返回对应的 Class 对象。如果 findClass 方法无法找到或加载类，则会抛出 ClassNotFoundException 异常。
+
+```java
+    protected Class<?> findClass(String name) throws ClassNotFoundException {
+        throw new ClassNotFoundException(name);
+    }
+```
+
+findClass由子类实现
+
+### 测试用外部插件
+
+代码如下，编译为 .class 和 .jar 文件以备使用
+
+```java
+package io.github.xiaoso456;
+import java.util.Objects;
+public class MyPlugin {
+
+    private String name;
+    private String version;
+
+    static {
+        System.out.println("加载插件成功");
+    }
+}
+```
+
+
+
+### 简单的自定义ClassLoader加载class
+
+SimpleClassLoader 作用是加载一个外部 .class 文件
+
+SimpleClassLoader 的作用很有限，创建 SimpleClass 时传入 .class 文件地址，重写findClass方法，
+
+```java
+public class SimpleClassLoader extends ClassLoader {
+
+    private String classPath;
+
+    public SimpleClassLoader(String classPath) {
+        this.classPath = classPath;
+    }
+
+    @Override
+    protected Class<?> findClass(String name) {
+        byte[] bytes = FileUtil.readBytes(classPath);
+        return defineClass(name, bytes, 0, bytes.length);
+    }
+
+}
+
+```
+
+测试类
+
+```java
+public class TestSimpleClassLoader  {
+
+    @Test
+    void testTestSimpleClassLoader() throws ClassNotFoundException, NoSuchMethodException, InvocationTargetException, InstantiationException, IllegalAccessException {
+        SimpleClassLoader simpleClassLoader = new SimpleClassLoader("D:\\code\\project\\idea_project\\spi-demo\\my-plugin\\target\\classes\\io\\github\\xiaoso456\\MyPlugin.class");
+        Class<?> myPluginClass = simpleClassLoader.loadClass("io.github.xiaoso456.MyPlugin");
+
+        Object instance = myPluginClass.getDeclaredConstructor().newInstance();
+
+        System.out.println(instance);
+    }
+}
+```
+
+输出结果
+
+```
+加载插件成功
+MyPlugin{name='null', version='null'}
+```
+
+### 简单的自定义ClassLoader加载jar
+
+JAR（Java Archive）是一种用于打包和分发 Java 程序和相关资源的文件格式。它将多个 Java 类文件、资源文件、配置文件和其他文件组合在一起，形成一个可执行的、可部署的单元。
+
+Jar 包是使用 ZIP 算法压缩得到的，一种最简单的方法就是先把 Jar包解压，再读取其中的 .class 文件即可
+
+Jdk也提供一些方法，可以直接读取jar内class
+
+```java
+package io.github.xiaoso456.loader;
+
+import cn.hutool.core.io.IoUtil;
+
+import java.io.IOException;
+import java.io.InputStream;
+import java.util.jar.JarEntry;
+import java.util.jar.JarFile;
+
+public class JarSimpleClassLoader extends ClassLoader {
+
+    private String jarPath;
+
+    public JarSimpleClassLoader(String jarPath) {
+        this.jarPath = jarPath;
+    }
+    
+
+    @Override
+    protected Class<?> findClass(String name) {
+        String classPath = classnameToPath(name);
+        try (JarFile jarFile = new JarFile(jarPath, false)) {
+            JarEntry jarEntry = jarFile.getJarEntry(classPath);
+            InputStream classInputStream = jarFile.getInputStream(jarEntry);
+            byte[] classBytes = IoUtil.readBytes(classInputStream);
+            return defineClass(name, classBytes, 0, classBytes.length);
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        }
+
+    }
+
+    /**
+     * 把 io.github.xiaoso456.MyPlugin 这种类名转化为jar包格式class文件路径 io/github/xiaoso456/MyPlugin.class
+     *
+     * @param classname 类全限定名
+     * @return class 文件路径
+     */
+    private String classnameToPath(String classname) {
+        return classname.replaceAll("\\.", "/") + ".class";
+    }
+
+}
+
+```
+
+测试类
+
+```java
+
+public class TestJarSimpleClassLoader {
+
+    @Test
+    void testTestSimpleClassLoader() throws ClassNotFoundException, NoSuchMethodException, InvocationTargetException, InstantiationException, IllegalAccessException {
+        JarSimpleClassLoader jarSimpleClassLoader = new JarSimpleClassLoader("D:\\code\\project\\idea_project\\spi-demo\\my-plugin\\target\\my-plugin.jar");
+        Class<?> myPluginClass = jarSimpleClassLoader.loadClass("io.github.xiaoso456.MyPlugin");
+
+        Object instance = myPluginClass.getDeclaredConstructor().newInstance();
+
+        System.out.println(instance);
+    }
+}
+
+```
+
+输出
+
+```
+加载插件成功
+MyPlugin{name='null', version='null'}
+```
+
 
 
 ## 参考
 
 ChatGPT
 
+[实现ClassLoader - 廖雪峰的官方网站 (liaoxuefeng.com)](https://www.liaoxuefeng.com/wiki/1545956031987744/1545956487069728)
+
+[Java 基础：ClassLoader理解和实现_java的classloader_RayBreslin的博客-CSDN博客](https://blog.csdn.net/u010886217/article/details/103488684)
