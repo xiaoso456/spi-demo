@@ -669,6 +669,133 @@ public class TestJarSimpleClassLoader {
 MyPlugin{name='null', version='null'}
 ```
 
+## Nacos中的插件机制
+
+以2.2.x的nacos源码分析
+
+插件接口： nacos-plugin 模块
+
+自定义的ClassLoader：common模块`com.alibaba.nacos.common.spi.NacosServiceLoader`
+
+先看SERVICES，结构如下`接口类:list{接口实现类1,接口实现类2}` ,了解到存储结构后就很简单了，这个自定义的ServiceLoader流程如下：
+
+1. 如果service接口类已经被加载过，反射实例化保存在 SERVICES 中该接口的实现类
+2. 如果没有被加载过，使用 JDK ServiceLoader加载实例化，并把实现类记录到 SERVICES 中
+
+```java
+public class NacosServiceLoader {
+    
+    private static final Map<Class<?>, Collection<Class<?>>> SERVICES = new ConcurrentHashMap<>();
+    
+    /**
+     * Load service.
+     *
+     * <p>Load service by SPI and cache the classes for reducing cost when load second time.
+     *
+     * @param service service class
+     * @param <T> type of service
+     * @return service instances
+     */
+    public static <T> Collection<T> load(final Class<T> service) {
+        if (SERVICES.containsKey(service)) {
+            return newServiceInstances(service);
+        }
+        Collection<T> result = new LinkedHashSet<>();
+        for (T each : ServiceLoader.load(service)) {
+            result.add(each);
+            cacheServiceClass(service, each);
+        }
+        return result;
+    }
+    
+    private static <T> void cacheServiceClass(final Class<T> service, final T instance) {
+        if (!SERVICES.containsKey(service)) {
+            SERVICES.put(service, new LinkedHashSet<>());
+        }
+        SERVICES.get(service).add(instance.getClass());
+    }
+    
+    /**
+     * New service instances.
+     *
+     * @param service service class
+     * @param <T> type of service
+     * @return service instances
+     */
+    public static <T> Collection<T> newServiceInstances(final Class<T> service) {
+        return SERVICES.containsKey(service) ? newServiceInstancesFromCache(service) : Collections.<T>emptyList();
+    }
+    
+    @SuppressWarnings("unchecked")
+    private static <T> Collection<T> newServiceInstancesFromCache(Class<T> service) {
+        Collection<T> result = new LinkedHashSet<>();
+        for (Class<?> each : SERVICES.get(service)) {
+            result.add((T) newServiceInstance(each));
+        }
+        return result;
+    }
+    
+    private static Object newServiceInstance(final Class<?> clazz) {
+        try {
+            return clazz.newInstance();
+        } catch (IllegalAccessException | InstantiationException e) {
+            throw new ServiceLoaderException(clazz, e);
+        }
+    }
+}
+
+```
+
+以nacos中鉴权spi管理为例 `com.alibaba.nacos.plugin.auth.spi.server.AuthPluginManager`，创建时加载一次
+
+```java
+public class AuthPluginManager {
+    
+    private static final Logger LOGGER = LoggerFactory.getLogger(AuthPluginManager.class);
+    
+    private static final AuthPluginManager INSTANCE = new AuthPluginManager();
+    
+    /**
+     * The relationship of context type and {@link AuthPluginService}.
+     */
+    private final Map<String, AuthPluginService> authServiceMap = new HashMap<>();
+    
+    private AuthPluginManager() {
+        initAuthServices();
+    }
+    
+    private void initAuthServices() {
+        Collection<AuthPluginService> authPluginServices = NacosServiceLoader.load(AuthPluginService.class);
+        for (AuthPluginService each : authPluginServices) {
+            if (StringUtils.isEmpty(each.getAuthServiceName())) {
+                LOGGER.warn(
+                        "[AuthPluginManager] Load AuthPluginService({}) AuthServiceName(null/empty) fail. Please Add AuthServiceName to resolve.",
+                        each.getClass());
+                continue;
+            }
+            authServiceMap.put(each.getAuthServiceName(), each);
+            LOGGER.info("[AuthPluginManager] Load AuthPluginService({}) AuthServiceName({}) successfully.",
+                    each.getClass(), each.getAuthServiceName());
+        }
+    }
+    
+    public static AuthPluginManager getInstance() {
+        return INSTANCE;
+    }
+    
+    /**
+     * get AuthPluginService instance which AuthPluginService.getType() is type.
+     *
+     * @param authServiceName AuthServiceName, mark a AuthPluginService instance.
+     * @return AuthPluginService instance.
+     */
+    public Optional<AuthPluginService> findAuthServiceSpiImpl(String authServiceName) {
+        return Optional.ofNullable(authServiceMap.get(authServiceName));
+    }
+    
+}
+```
+
 
 
 ## 参考
